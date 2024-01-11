@@ -1,0 +1,16 @@
+[package]
+name = "wasm-demo"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+wasm-bindgen = "0.2"
+rand = "0.8"
+
+[dependencies.getrandom]
+version = "0.2"
+features = ["js"]
+
+[lib]
+crate-type = ["cdylib", "rlib"]

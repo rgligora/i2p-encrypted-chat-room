@@ -1,0 +1,330 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="message-box">
+  <div class="banner">
+    <div class="banner-buttons left">
+      <button class="banner button menu" id="menu-button">&#9776;</button>
+    </div>
+
+    <div class="banner title">
+      <div class="centered">
+        <div>Chat Room</div>
+        <div id="chat-room-code">{{code}}</div>
+      </div>
+    </div>
+    <div class="banner-buttons right">
+      <button class="banner button leave" id="leave-room-btn">Leave Room</button>
+    </div>
+    <div id="side-menu" class="side-menu">
+      <div id="side-menu-users">Users in chat</div>
+      <ul id="user-list">
+      </ul>
+    </div>
+  </div>
+  <div class="messages" id="messages-container"></div>
+  <div class="inputs">
+    <input
+      type="text"
+      rows="3"
+      placeholder="Message"
+      name="message"
+      id="message"
+      autofocus
+    />
+    <button type="button" name="send" id="send-btn" onClick="sendMessage()">
+      Send
+    </button>
+  </div>
+</div>
+<script type="text/javascript">
+  sessionStorage.setItem('publicKey', '{{ public_key }}');
+  let publicKey = sessionStorage.getItem('publicKey');
+
+  /* This is the start of the encryption */
+  async function generateAesKey() {
+      try {
+          const aesKey = await window.crypto.subtle.generateKey(
+              {
+                  name: "AES-GCM",
+                  length: 256, // Can be 128, 192, or 256
+              },
+              true, // Whether the key is extractable
+              ["encrypt", "decrypt"] // Use the key for encryption and decryption
+          );
+          return aesKey;
+      } catch (e) {
+          console.error("AES Key generation error:", e);
+      }
+  }
+
+  async function exportAesKey(aesKey) {
+      try {
+          const exportedKey = await window.crypto.subtle.exportKey(
+              "raw", // Export the key in raw format
+              aesKey
+          );
+          
+          return exportedKey;
+      } catch (e) {
+          console.error("AES Key export error:", e);
+      }
+  }
+
+  async function encryptAesKeyWithRsa(exportedAesKey, rsaPublicKey) {
+  
+      try {
+          // Import the RSA public key
+          const rsaPublicKeyImported = await window.crypto.subtle.importKey(
+              "spki", // Use "spki" for public key import
+              base64ToBuffer(rsaPublicKey),
+              {
+                  name: "RSA-OAEP",
+                  hash: "SHA-256",
+              },
+              false, // Public key is not extractable
+              ["encrypt"]
+          );
+          // Encrypt the AES key with the RSA public key
+          const encryptedAesKey = await window.crypto.subtle.encrypt(
+              {
+                  name: "RSA-OAEP",
+              },
+              rsaPublicKeyImported,
+              exportedAesKey // Buffer of the AES key
+          );
+          return encryptedAesKey;
+      } catch (e) {
+          console.error("AES Key encryption error:", e);
+      }
+  }
+
+
+  function base64ToBuffer(base64Key) {
+        const binaryString = window.atob(base64Key);
+        const buffer = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+            buffer[i] = binaryString.charCodeAt(i);
+        }
+        return buffer;
+  }
+    
+  function arrayBufferToBase64(buffer) {
+    let binary = '';
+    const bytes = new Uint8Array(buffer);
+    const len = bytes.byteLength;
+    for (let i = 0; i < len; i++) {
+        binary += String.fromCharCode(bytes[i]);
+    }
+    return window.btoa(binary);
+  }
+
+
+  function base64ToArrayBuffer(base64) {
+    const binaryString = window.atob(base64);
+    const bytes = new Uint8Array(binaryString.length);
+    for (let i = 0; i < binaryString.length; i++) {
+        bytes[i] = binaryString.charCodeAt(i);
+    }
+    return bytes.buffer;
+  }
+
+
+  let aesKey;
+  async function generateAndEncryptAesKey(rsaPublicKey) {
+      aesKey = await generateAesKey();
+      const exportedAesKey = await exportAesKey(aesKey);
+
+       // Convert the exported AES key to a Base64 string for logging
+      const aesKeyBase64 = arrayBufferToBase64(exportedAesKey);
+      console.log("Exported AES Key (Base64):", aesKeyBase64);
+
+      const encryptedAesKey = await encryptAesKeyWithRsa(exportedAesKey, rsaPublicKey);
+      return encryptedAesKey;
+  }
+
+  async function encryptMessage(message) {  
+    // Convert the message to an ArrayBuffer
+    const encoder = new TextEncoder();
+    const encodedMessage = encoder.encode(message);
+
+    // Generate an IV (initialization vector)
+    const iv = window.crypto.getRandomValues(new Uint8Array(12));
+
+    // Encrypt the message
+    const encryptedMessage = await window.crypto.subtle.encrypt(
+        {
+            name: "AES-GCM",
+            iv: iv
+        },
+        aesKey,
+        encodedMessage
+    );
+
+    // Combine the IV and the encrypted message
+    const combined = new Uint8Array(iv.length + encryptedMessage.byteLength);
+    combined.set(iv, 0);
+    combined.set(new Uint8Array(encryptedMessage), iv.length);
+
+    // Convert the result to a Base64 string to send it over the network
+    return arrayBufferToBase64(combined);
+  }
+
+  async function decryptMessage(encryptedMessageBase64) {
+    // Convert the Base64 string back to an ArrayBuffer
+    try{
+      const combined = base64ToArrayBuffer(encryptedMessageBase64);
+
+        // Extract the IV (initialization vector)
+        const iv = combined.slice(0, 12);
+        
+        // Extract the encrypted message
+        const encryptedMessage = combined.slice(12);
+
+        // Decrypt the message
+        const decryptedMessage = await window.crypto.subtle.decrypt(
+            {
+                name: "AES-GCM",
+                iv: iv
+            },
+            aesKey,
+            encryptedMessage
+        );
+
+        // Convert the decrypted ArrayBuffer back to a string
+        const decoder = new TextDecoder();
+        return decoder.decode(decryptedMessage);
+    } catch(e){
+      console.error("Decryption message error:", e);
+    }
+  }
+
+
+
+
+  /* This is the end of the encryption */
+
+  let socketio
+  async function initializeSocketConnection(encryptedAesKeyBase64) {
+    console.log(encryptedAesKeyBase64)
+    socketio = io({auth:{symmetric_key: encryptedAesKeyBase64}});
+    
+
+    socketio.on("message", async (data) => {
+      console.log(data.message);
+      try{
+        const decryptedMessage = await decryptMessage(data.message);
+        createMessage(data.name, decryptedMessage, data.is_self);
+      } catch(e){
+        console.error("Error decrypting message:", e);
+
+      }
+      
+      //createMessage(data.name, "usao", data.is_self);
+    });
+
+    socketio.on("update_user_list", (userList) => {
+        const userListElement = document.getElementById("user-list");
+        userListElement.innerHTML = '';  // Clear existing list
+        userList.forEach(user => {
+          const userItem = document.createElement("li");
+          userItem.textContent = user;
+          userListElement.appendChild(userItem);
+        });
+      });
+
+  }
+
+  let user = "unassigned";
+    const messagesContainer = document.getElementById("messages-container");
+
+    const createMessage = (name, msg, isSelf) => {
+      let alignmentClass;
+      if(user === "unassigned"){
+          user = name;
+      }
+      if(name == user){
+          alignmentClass = "self";
+      }else{
+          alignmentClass = "other";
+      }
+      const content = `
+        <div class="text ${alignmentClass}">
+            <div class="bubble ${alignmentClass}">
+                <div class="message-content">
+                    <strong>${name}</strong>: ${msg}
+                </div>
+                <div class="timestamp ${alignmentClass}">
+                    ${new Date().toLocaleString()}
+                </div>
+            </div>
+        </div>
+
+        `;
+      
+      messagesContainer.innerHTML += content
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+    };
+
+
+    const sendMessage = async () => {
+      const message = document.getElementById("message").value;
+      if (message === "") return;
+
+      const encryptedMessage = await encryptMessage(message);  // aesKey should be stored securely
+      socketio.emit("message", { data: encryptedMessage });
+      document.getElementById("message").value = "";
+    };
+
+    // JavaScript to toggle the side menu
+    const menuButton = document.getElementById("menu-button");
+    const sideMenu = document.getElementById("side-menu");
+
+    menuButton.addEventListener("click", function () {
+      if (sideMenu.style.width === "250px") {
+        // Close the side menu
+        sideMenu.style.color = "black";
+        sideMenu.style.width = "0";
+      } else {
+        // Open the side menu
+        sideMenu.style.color = "white";
+        sideMenu.style.width = "250px";
+      }
+    });
+
+    const leaveRoomButton = document.getElementById("leave-room-btn");
+
+      leaveRoomButton.addEventListener("click", function() {
+          socketio.disconnect();
+          window.location.href = "/";
+      });
+  
+
+  async function setupChat() {
+        // Example usage:
+        const rsaPublicKey = sessionStorage.getItem('publicKey'); // Retrieve from session storage
+        const encryptedAesKey = await generateAndEncryptAesKey(rsaPublicKey);
+        
+        
+        // Initialize Socket.IO connection with the encrypted AES key
+        const encryptedAesKeyBase64 = arrayBufferToBase64(encryptedAesKey);
+        await initializeSocketConnection(encryptedAesKeyBase64);
+  }
+
+  // Start setting up the chat when the page loads
+  setupChat();
+
+</script>
+
+<script type="module">
+  import init, { generate_hello_world } from '{{ url_for("static", filename="pkg/wasm_demo.js") }}';
+
+  async function runWasm() {
+      await init();
+      const helloWorld = generate_hello_world();
+      console.log(helloWorld); // This will log "Hello World" to the console
+  }
+
+  runWasm();
+</script>
+
+{% endblock %}
