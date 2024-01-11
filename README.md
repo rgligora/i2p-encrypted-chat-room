@@ -44,7 +44,7 @@ This project is an eepsite-based chat room application utilizing Flask and Flask
    New terminal tab
    ```bash
    cd /var/www/i2p-encrypted-chat-app
-   sudo ln -s /var/www/i2p-encrypted-chat-app/nginx/chat-app.conf /etc/nginx/sites-enabled
+   sudo ln -s /var/www/i2p-encrypted-chat-app/chat-app.conf /etc/nginx/sites-enabled
 
 5. **Restart Nginx to apply the changes:**
    ```bash
